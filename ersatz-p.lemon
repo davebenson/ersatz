@@ -1,0 +1,596 @@
+
+%include{
+#define MAYBE_APPEND_BY_1_ELEMENT(inout, elt_type, elt)                    \
+  if (inout.n & (inout.n-1) == 0) {                                        \
+    if (inout.n == 0)                                                      \
+      inout.array = malloc(sizeof(elt_type));                              \
+    else                                                                   \
+      inout.array = realloc(inout.array, (inout.n*2) * sizeof(elt_type));  \
+    inout.array[inout.n++] = elt;                                          \
+  } else {}
+}
+
+module(module) ::= function_definition_list(list).
+        { module = list; }
+
+
+map_or_record_expr(rv) ::= unambiguous_expr(a).
+        {rv=a;}
+call_expr(rv) ::= map_or_record_expr(a).
+        {rv=a;}
+unary_expr(rv) ::= call_expr(a).
+        {rv=a;}
+mul_expr(rv) ::= unary_expr(a).
+        {rv=a;}
+add_expr(rv) ::= mul_expr(a).
+        {rv=a;}
+binary_list_expr(rv) ::= add_expr(a).
+        {rv=a;}
+comparison_expr(rv) ::= binary_list_expr(a).
+        {rv=a;}
+andalso_expr(rv) ::= comparison_expr(a).
+        {rv=a;}
+orelse_expr(rv) ::= andalso_expr(a).
+        {rv=a;}
+send_or_assign_expr(rv) ::= orelse_expr(a).
+        {rv=a;}
+try_or_catch_expr(rv) ::= send_or_assign_expr(a).
+        {rv=a;}
+expr(rv) ::= try_or_catch_expr(a).
+        { rv = a; }
+
+unambiguous_expr(rv) ::= LPAREN expr(a) RPAREN.
+        {rv=a;}
+unambiguous_expr(rv) ::= bitstring_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= list_comprehension_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= bitstring_comprehension_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= fun_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= atom(a).
+        { rv = erp_expr_new_atom (a); }
+unambiguous_expr(rv) ::= if_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= case_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= receive_expr(a).
+        { rv = a; }
+unambiguous_expr(rv) ::= block_expr(a).
+        { rv = a; }
+
+atom(rv) ::= ATOM(a).
+        { rv = a; }
+atom(rv) ::= TRUE(a).
+        { rv = a; }
+
+function_definition_list(rv) ::= function_definition_list(in) function_definition(a).
+        { rv = in;
+          ERP_Toplevel *top = new_toplevel_from_function(a);
+          if (in.last == NULL)
+            in.first = in.last = top;
+          else {
+            in.last->next = top;
+            in.last = top;
+          }
+        }
+function_definition_list(rv) ::= .
+        { rv.first = NULL; rv.last = NULL; }
+
+function_definition(rv) ::= function_clause_list(a) DOT.
+        { rv = a; }
+
+function_clause_list(rv) ::= function_clause(a).
+        { rv.first = rv.last = a; }
+function_clause_list(rv) ::= function_clause_list(in) SEMICOLON function_clause(a).
+        { rv = in;
+          rv.last->next = a;
+          rv.last = a; }
+
+function_clause(rv) ::= ATOM(name) LPAREN pattern_list(args) opt_guard_list(guards) RIGHT_ARROW expr(body).
+        { rv = erp_function_clause_new (name, args, guards, body); }
+
+
+
+//
+// Unary-Operator Expressions
+//
+unary_expr(rv) ::= unary_op(op) map_or_record_expr(a).
+        { rv = erp_unary_expr_new (op, a); }
+unary_op(rv) ::= NOT(tok).
+        { rv.token = tok;
+          rv.unary_operator = ERP_UNARY_OP_NOT; }
+unary_op(rv) ::= BNOT(tok).
+        { rv.token = tok;
+          rv.unary_operator = ERP_UNARY_OP_BITWISE_NOT; }
+unary_op(rv) ::= MINUS(tok).
+        { rv.token = tok;
+          rv.unary_operator = ERP_UNARY_OP_NEGATE; }
+unary_op(rv) ::= PLUS(tok).
+        { rv.token = tok;
+          rv.unary_operator = ERP_UNARY_OP_PLUS; }
+
+//
+//
+// Bit-String Expression
+//
+//
+bitstring_expr(rv) ::= LTLT bitstring_expr_segment_list(list) GTGT.
+        { rv = erp_binary_expr_new (list.n, list.array);
+          list.n = 0;
+          list.array = NULL; }
+
+bitstring_expr_segment_list(rv) ::= .
+        { rv.n = 0;
+          rv.array = NULL; }
+bitstring_expr_segment_list(rv) ::= bitstring_expr_segment(seg).
+        { rv.n = 1;
+          rv.array = malloc(sizeof(ERP_BitstringExprSegment));
+          rv.array[0] = seg; }
+bitstring_expr_segment_list(rv) ::= bitstring_expr_segment_list(list) COMMA bitstring_expr_segment(seg).
+        { rv = list;
+          MAYBE_APPEND_BY_1_ELEMENT(rv, ERP_BitStringExprSegment, seg); }
+
+bitstring_expr_segment(rv) ::= expr(e) opt_size_expr(size) opt_type_specifier_list(tslist).
+        { rv = erp_bitstring_expr_segment_init (e, size, tslist); }
+
+
+opt_size_expr(rv) ::= .
+        { rv = NULL; }
+opt_size_expr(rv) ::= COLON expr(size).
+        { rv = size; size = NULL; }
+
+
+opt_type_specifier_list(rv) ::= .
+        { rv = ERP_TYPE_SPECIFIER_LIST_INIT; }
+opt_type_specifier_list(rv) ::= SLASH type_specifier_list(list).
+        { rv = list; }
+type_specifier_list(rv) ::= ATOM(atom).
+        { rv = ERP_TYPE_SPECIFIER_LIST_INIT;
+          ERP_TypeSpecifierType t;
+          ERP_TypeSpecifierSignedness s;
+          if (erp_type_specifier_type_from_atom (atom.atom, &t)) {
+            rv.type = t;
+          } else if (erp_type_specifier_signedness_from_atom (atom.atom, &s)) {
+            if (rv.signedness != ERP_TYPE_SPECIFIER_SIGNEDNESS_NONE)
+              ... error
+            rv.signedness = s;
+          } else if (erp_type_specifier_endianness_from_atom (atom.atom, &e)) {
+            if (rv.endianness != ERP_TYPE_SPECIFIER_ENDIANNESS_NONE)
+              ... error
+            rv.endianness = e;
+          } else {
+            ... error
+          }
+        }
+
+type_specifier_list(rv) ::= type_specifier_list(list) HYPHEN ATOM(atom).
+        { rv = list;
+          ERP_TypeSpecifierType t;
+          ERP_TypeSpecifierSignedness s;
+          if (erp_type_specifier_type_from_atom (atom.atom, &t)) {
+            if (rv.type != ERP_TYPE_SPECIFIER_TYPE_NONE) {
+              PARSE_ERROR(atom.position, "multiple conflicting type specifiers given"
+            }
+            rv.type = t;
+          } else if (erp_type_specifier_signedness_from_atom (atom.atom, &s)) {
+            if (rv.signedness != ERP_TYPE_SPECIFIER_SIGNEDNESS_NONE) {
+              PARSE_ERROR(atom.position, "multiple conflicting type signedness given");
+            }
+            rv.signedness = s;
+          } else if (erp_type_specifier_endianness_from_atom (atom.atom, &e)) {
+            if (rv.endianness != ERP_TYPE_SPECIFIER_ENDIANNESS_NONE) {
+              PARSE_ERROR(atom.position, "multiple conflicting type endianness given");
+            }
+            rv.endianness = e;
+          } else {
+            PARSE_ERROR(atom.position, "invalid atom in type-specifier list");
+          }
+        }
+type_specifier_list(rv) ::= type_specifier_list(list) HYPHEN ATOM(atom) COLON INTEGER(unit).
+        { rv = list;
+          if (atom.atom != erp_atom__unit) {
+            PARSE_ERROR(atom.position, "only 'unit' is allowed before '('");
+          }
+          if (!erp_token_to_long (&unit, &val) || val < 1 || val > 255) {
+            PARSE_ERROR(atom.position, "invalid size for unit()");
+          }
+          rv.unit = (int) value;
+        }
+type_specifier_list(rv) ::= ATOM(atom) COLON INTEGER(unit).
+        { rv = ERP_TYPE_SPECIFIER_LIST_INIT;
+          if (atom.atom != erp_atom__unit) {
+            PARSE_ERROR(atom.position, "only 'unit' is allowed before '('");
+          }
+          if (!erp_token_to_long (&unit, &val) || val < 1 || val > 255) {
+            PARSE_ERROR(atom.position, "invalid size for unit()");
+          }
+          rv.unit = (int) value;
+        }
+
+//
+//
+// Match Expression
+//
+// (assignment)
+//
+send_or_assign_expr(rv) ::= pattern(lvalue) EQUALS send_or_assign_expr(rvalue).
+        { rv = erp_assign_expr_new (lvalue, rvalue); }
+
+
+//
+//
+// Function Call Expr
+//
+func_call_expr(rv) ::= unambiguous_expr(func_name) LPAREN expr_list(list) RPAREN.
+        { rv = erp_function_call_expr_new (func_name, list.n, list.array);
+        }
+func_call_expr(rv) ::= unambiguous_expr(module_name) COLON unambiguous_expr(func_name) LPAREN expr_list(list) RPAREN.
+        { rv = erp_function_call_expr_new_mfa (module_name, func_name, list.n, list.array);
+        }
+call_expr(rv) ::= func_call_expr(a).
+        {rv=a;}
+
+//
+// If Expr
+//
+if_expr(rv) ::= IF guard_arrow_expr_list(ge_list) END.
+        { rv = erp_if_expr_new (ge_list.position, ge_list.n, ge_list.array);
+        }
+guard_arrow_expr_list(rv) ::= guard_arrow_expr_list(list) SEMICOLON guard_arrow_expr(gae).
+        { rv = list;
+          MAYBE_APPEND_BY_1_ELEMENT(rv, ERP_GuardExprPair, gae); }
+guard_arrow_expr_list(rv) ::= guard_arrow_expr(gae).
+        { rv.n = 1;
+          rv.array = malloc (sizeof (ERP_GuardExprPair));
+          rv.array[0] = gae; }
+guard_arrow_expr(rv) ::= guard(g) RIGHT_ARROW expr(e).
+        { rv.guard = g;
+          rv.expr = e; }
+
+//
+// Case Expr
+//
+case_expr(rv) ::= CASE expr(case_expr) OF pattern_guard_expr_list(pge_list) END.
+        { rv = erp_case_expr_new (case_expr, pge_list); }
+
+pattern_guard_expr_list(rv) ::= pattern_guard_expr(pge).
+        { rv.n = 1;
+          rv.array = malloc(sizeof(ERP_PatternGuardExprTriple));
+          rv.array[0] = pge; }
+pattern_guard_expr_list(rv) ::= pattern_guard_expr_list(list) SEMICOLON pattern_guard_expr(pge).
+        { rv = list;
+          MAYBE_APPEND_BY_1_ELEMENT(rv, ERP_PatternGuardExprTriple, pge); }
+
+pattern_guard_expr(rv) ::= pattern(p) WHEN guard(g) RIGHT_ARROW expr(e).
+        { rv.pattern = p;
+          rv.guard = g;
+          rv.expr = e; }
+pattern_guard_expr(rv) ::= pattern(p) RIGHT_ARROW expr(e).
+        { rv.pattern = p;
+          rv.guard = NULL;
+          rv.expr = e; }
+
+
+//
+// Send Expr
+//
+send_or_assign_expr(rv) ::= orelse_expr(pid) EXCLAMATION_MARK send_or_assign_expr(message).
+        { rv = erp_binary_operator_expr_new (ERP_BINARY_OP_SEND, pid, message);
+        }
+
+//
+// Receive Expr
+//
+receive_expr(rv) ::= RECEIVE pattern_guard_expr_list(list) END.
+        { rv = erp_receive_expr_new (list.n, list.array);
+        }
+
+
+//
+// Short-Circuit OR (orelse)
+//
+orelse_expr(rv) ::= orelse_expr(a) ORELSE send_or_assign_expr(b).
+        { rv = erp_binary_operator_expr_new(ERP_BINARY_OP_ORELSE, a, b); }
+
+//
+// Short-Circuit AND (andalso)
+//
+andalso_expr(rv) ::= andalso_expr(a) ANDALSO orelse_expr(b).
+        { rv = erp_binary_operator_expr_new(ERP_BINARY_OP_ANDALSO, a, b); }
+
+//
+// Comparator Expr
+//
+comparison_expr(rv) ::= binary_list_expr(a) compare_op(op) binary_list_expr(b).
+        { rv = erp_binary_operator_expr_new(a, op.binary_op, b); }
+compare_op(op) ::= EQEQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_EQUAL_TO;
+          op.position = p.position; }
+compare_op(op) ::= NEQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_NOT_EQUAL_TO;
+          op.position = p.position; }
+compare_op(op) ::= LTEQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_LESS_THAN_OR_EQUAL_TO;
+          op.position = p.position; }
+compare_op(op) ::= LT(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_LESS_THAN;
+          op.position = p.position; }
+compare_op(op) ::= GT(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_GREATER_THAN;
+          op.position = p.position; }
+compare_op(op) ::= GTEQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_GREATER_THAN_OR_EQUAL_TO;
+          op.position = p.position; }
+compare_op(op) ::= EQ_COLON_EQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_EXACTLY_EQUAL_TO;
+          op.position = p.position; }
+compare_op(op) ::= EQ_SLASH_EQ(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_EXACTLY_NOT_EQUAL_TO;
+          op.position = p.position; }
+
+binary_list_expr(rv) ::= binary_list_expr(a) list_op(op) add_expr(b).
+        { rv = erp_binary_operator_expr_new (a, op.binary_op, b); }
+          
+list_op(op) ::= PLUSPLUS(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_CONCAT;
+          op.position = p.position; }
+list_op(op) ::= MINUSMINUS(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_LIST_DIFFERENCE;
+          op.position = p.position; }
+
+//
+// Binary Operator Expressions
+//
+add_expr(rv) ::= add_expr(a) addlike_op(op) mul_expr(b).
+        { rv = erp_binary_operator_expr_new(a, op.binary_op, b); }
+mul_expr(rv) ::= mul_expr(a) multlike_op(op) unary_expr(b).
+        { rv = erp_binary_operator_expr_new(a, op.binary_op, b); }
+
+
+//
+// Binary Operators
+//
+addlike_op(op) ::= PLUS(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_ADD;
+          op.position = p.position; }
+addlike_op(op) ::= MINUS(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_SUBTRACT;
+          op.position = p.position; }
+addlike_op(op) ::= BOR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_BITWISE_OR;
+          op.position = p.position; }
+addlike_op(op) ::= BXOR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_BITWISE_XOR;
+          op.position = p.position; }
+addlike_op(op) ::= BSL(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_BITSHIFT_LEFT;
+          op.position = p.position; }
+addlike_op(op) ::= BSR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_BITSHIFT_RIGHT;
+          op.position = p.position; }
+addlike_op(op) ::= OR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_OR;
+          op.position = p.position; }
+addlike_op(op) ::= XOR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_XOR;
+          op.position = p.position; }
+
+multlike_op(op) ::= SLASH(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_SLASH;
+          op.position = p.position; }
+multlike_op(op) ::= STAR(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_STAR;
+          op.position = p.position; }
+multlike_op(op) ::= DIV(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_DIV;
+          op.position = p.position; }
+multlike_op(op) ::= REM(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_REM;
+          op.position = p.position; }
+multlike_op(op) ::= BAND(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_BAND;
+          op.position = p.position; }
+multlike_op(op) ::= AND(p).
+        { op.binary_op = ERSATZ_BINARY_OPERATOR_AND;
+          op.position = p.position; }
+
+//
+// Map Expressions
+//
+map_or_record_expr(rv) ::= HASH(hash) LBRACE map_element_list(list) RBRACE.
+        { rv = erp_map_expr_new (hash.position, list.n, list.array); }
+map_element_list(list) ::= map_element(elt).
+        { list.position = elt.position;
+          list.n = 1;
+          list.array = NEW_ARRAY(1, ERP_MapElement);
+        }
+map_element_list(list) ::= map_element_list(head) COMMA map_element(elt).
+        { list = head;
+          MAYBE_APPEND_BY_1_ELEMENT(list, ERP_MapElement, elt);
+        }
+map_element(rv) ::= expr(key_expr) DOUBLE_RIGHT_ARROW expr(value_expr).
+        { rv.position = erp_code_position_ref(key->position);
+          rv.key = key_expr;
+          rv.value = value_expr; }
+
+//
+// Map Update Expressions
+//
+map_or_record_expr(rv) ::= map_or_record_expr(old_map) HASH LBRACE map_update_list(list) RBRACE.
+        { rv = erp_map_update_expr_new (old_map, list.n, list.array); }
+map_update_list(rv) ::= map_update(a).
+        { rv.n = 1;
+          rv.array = malloc(sizeof(ERP_MapUpdate));
+          rv.array[0] = a; }
+map_update_list(rv) ::= map_update_list(a) COMMA map_update(b).
+        { rv = a;
+          MAYBE_APPEND_BY_1_ELEMENT(rv, ERP_MapUpdate, b); }
+map_update(rv) ::= expr(key_expr) DOUBLE_RIGHT_ARROW expr(value_expr).
+        { rv.may_create = true;
+          rv.key = key_expr;
+          rv.value = value_expr; }
+map_update(rv) ::= expr(key) COLON_EQUALS expr(value).
+        { rv.may_create = false;
+          rv.key = key_expr;
+          rv.value = value_expr; }
+
+//
+// Record Expressions
+//
+map_or_record_expr(rv) ::= HASH record_name(atom) LBRACE field_update_list(list) RBRACE.
+        { rv = erp_record_expr_new (atom, list); }
+map_or_record_expr(rv) ::= map_or_record_expr(a) HASH record_name(atom) LBRACE field_update_list(list) RBRACE.
+        { rv = erp_record_update_expr_new (a, atom, list); }
+
+record_name(rv) ::= atom(a).
+        { rv = a; }
+
+//
+// Fun Expressions.
+//
+fun_expr(rv) ::= FUN fun_clause_list(list) END.
+        { rv = erp_fun_expr_new (list.n, list.array); }
+fun_clause_list(rv) ::= fun_clause_list(list) SEMICOLON fun_clause(clause).
+        { rv = list;
+          MAYBE_APPEND_BY_1_ELEMENT(rv, ERP_FunClause, clause); }
+fun_clause_list(rv) ::= fun_clause(clause).
+        { rv.n = 1;
+          rv.array = malloc(sizeof(ERP_FunClause));
+          rv.array[0] = clause; }
+
+fun_clause(rv) ::= opt_varname_or_atom(name) LPAREN pattern_list(args) RPAREN opt_guard_list(guard) RIGHT_ARROW expr(body).
+        { rv = erp_function_clause_new (name, args, guard, body); }
+
+opt_varname_or_atom(rv) ::= .
+        { rv = NULL; }
+opt_varname_or_atom(rv) ::= VARNAME(a).
+        { rv = a; }
+opt_varname_or_atom(rv) ::= atom(a).
+        { rv = a; }
+
+
+//
+// Exception Handling Expressions.
+//
+catch_expr(rv) ::= CATCH expr(expr).
+        { rv = erp_catch_expr_new (expr); }
+try_or_catch_expr(rv) ::= catch_expr(a).
+        { rv = a; }
+
+// throw is implemented as a simple NIF
+
+try_expr(rv) ::= TRY send_or_assign_expr_list(try_list) CATCH pattern_guard_expr_list(catch_list) END.
+        { rv = erp_try_expr_new (try_list, catch_list); }
+send_or_assign_expr_list(rv) ::= send_or_assign_expr(a).
+        { rv.first = rv.last = a; }
+send_or_assign_expr_list(rv) ::= send_or_assign_expr_list(a) COMMA send_or_assign_expr(a).
+        { rv = a; 
+          rv.last->next = b;
+          rv.last = b; }
+try_or_catch_expr(rv) ::= try_expr(a).
+        { rv = a; }
+
+//
+// Block Expression
+//
+block_expr(rv) ::= BEGIN expr_list(list) END.
+        { rv = erp_block_expr_new (list); }
+
+//
+// Comprehensions
+//
+list_comprehension_expr(rv) ::= LBRACKET expr(a) DOUBLE_VERTICAL_BAR qualifier_filter_list(b) RBRACKET.
+        { ... }
+bitstring_comprehension_expr(rv) ::= LTLT expr(a) DOUBLE_VERTICAL_BAR qualifier_filter_list(b) GTGT.
+        { ... }
+
+qualifier_filter_list(rv) ::= qualifier_filter_list(a) COMMA qualifier_or_filter(b).
+        { ... }
+qualifier_filter_list(rv) ::= qualifier_or_filter(a).
+        { ... }
+
+qualifier_or_filter(rv) ::= pattern(p) LEFT_ARROW expr(list_expr).
+        { rv.position = erp_code_position_ref(p.position);
+          rv.type = ERP_QUALIFIER_TYPE_LIST;
+          rv.info.list.pattern = p;
+          rv.info.list.expr = list_expr; }
+qualifier_or_filter(rv) ::= bitstring_pattern(p) DOUBLE_LEFT_ARROW expr(bitstr_expr).
+        { rv.position = erp_code_position_ref(p.position);
+          rv.type = ERP_QUALIFIER_TYPE_BITSTREAM;
+          rv.info.bitstring.pattern = p;
+          rv.info.bitstring.expr = bitstr_expr; }
+qualifier_or_filter(rv) ::= expr(filter_expr).
+        { rv.position = erp_code_position_ref(p.position);
+          rv.type = ERP_QUALIFIER_TYPE_FILTER;
+          rv.info.filter.expr = filter; }
+
+bitstring_pattern(rv) ::= bitstring_expr(a).
+        { ... each subexpr must be a Variable or a constant, output rv }
+
+
+//
+// Patterns
+//
+pattern(rv) ::= INTEGER(v).
+        { rv = erp_pattern_new_integer(v); }
+pattern(rv) ::= FLOAT(v).
+        { rv = erp_pattern_new_float(v); }
+pattern(rv) ::= ATOM(v).
+        { rv = erp_pattern_new_atom(v); }
+pattern(rv) ::= VARIABLE(v).
+        { rv = erp_pattern_new_variable(v); }
+pattern(rv) ::= STRING(v).
+        { rv = erp_pattern_new_string(v); }
+pattern(rv) ::= LBRACKET pattern_list(head) VERTICAL_BAR pattern(tail) RBRACKET.
+        { rv = erp_pattern_new_list(head, tail); }
+pattern(rv) ::= LBRACE pattern_list(head) RBRACE.
+        { rv = erp_pattern_new_tuple(head, tail); }
+pattern(rv) ::= HASH LBRACE map_pattern_list(m) RBRACE.
+        { rv = erp_pattern_new_map(m); }
+map_element_pattern(rv) ::= pattern(lhs) DOUBLE_RIGHT_ARROW pattern(rhs).
+        { rv = erp_map_element_pattern_new (lhs, rhs); }
+map_pattern_list(rv) ::= .
+        { rv.first = rv.last = NULL; }
+map_pattern_list(rv) ::= map_element_pattern(a).
+        { rv.first = rv.last = a; }
+map_pattern_list(rv) ::= map_pattern_list(a) COMMA map_element_pattern(b).
+        { rv = a;
+          rv.last->next = b;
+          rv.last = b; }
+
+pattern_list(rv) ::= .
+        { rv.first = rv.last = NULL; }
+pattern_list(rv) ::= pattern(a).
+        { rv.first = rv.last = a; }
+pattern_list(rv) ::= pattern_list(a) COMMA pattern(b).
+        { rv.first = rv.last = a;
+          rv.last->next = b;
+          rv.last = b; }
+
+expr_list(rv) ::= expr(a).
+        { rv.first = rv.last = a; }
+expr_list(rv) ::= expr_list(a) COMMA expr(b).
+        { rv = a;
+          rv.last->next = b;
+          rv.last = b; }
+
+opt_guard_list(rv) ::= .
+        { rv.first = rv.last = NULL; }
+opt_guard_list(rv) ::= when_guard_list(a).
+        { rv = a; }
+when_guard_list(rv) ::= WHEN guard(a).
+        { rv.first = rv.last = a; }
+when_guard_list(rv) ::= when_guard_list(a) COMMA guard(b).
+        { rv.first = rv.last = a;
+          rv.last->next = b;
+          rv.last = b; }
+          
+
+//
+// Guard
+//
+guard(rv) ::= expr(a).
+        { rv = erp_guard_new_from_expr (a); }
+
